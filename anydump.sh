@@ -22,7 +22,6 @@ declare -a INTERFACES=()
 declare -i ENABLE_WRITE_FILE=0
 declare -a TCPDUMP_ARGS=()
 
-set -x
 while :; do
     [ "${1}" == '' ] && break
     case "${1}" in

@@ -18,25 +18,32 @@ trap 'kill $(jobs -p) &> /dev/null && sleep 0.2 &&  echo ' EXIT
 # anydump.sh -w -i ens1 -i ens2 -nn icmp
 PROGNAME=$(basename $0)
 usage() {
-    echo "Usage: $PROGNAME [-i INTERFACE [-i INTERFACE]] [TCPDUMP OPTIONS] [FILTER EXPRESSION}"
+    echo "Usage: $PROGNAME [-w] [-i INTERFACE[,INTERFACE]] [-i INTERFACE[,INTERFACE]] [TCPDUMP_ARGS] [--] [TCPDUMP_ARGS]"
     echo
     echo "Options:"
     echo "  -h, --help"
     echo "  -i INTERFACE"
+    echo "  -w: Write the raw packets to a file in pcap format."
     echo
     echo "Sample"
-    echo "  $PROGNAME -i ens33 -i ens37 -nn icmp or port (53 or 5355)"
+    echo "  $PROGNAME -i ens33,ens37 -i tun0 -s 100 --no-promiscuous-mode -nn -A icmp or port (53 or 5355)"
     exit 1
 }
 
 declare -a INTERFACES=()
-declare -a FILTEREXPRESSIONS=()
-declare -a CAPTUREOPTS=()
-declare -a PRINTOPTS=()
 declare -i ENABLE_WRITE_FILE=0
+declare -a TCPDUMP_ARGS=()
 
-for OPT in "$@"; do
-    case $OPT in
+set -x
+while :; do
+    [ "${1}" == '' ] && break
+    case "${1}" in
+        --)
+            shift 1
+            TCPDUMP_ARGS+=( "$@" )
+            set --  #$@ を空にする
+            break
+            ;;
         -h | --help)
             usage
             exit 1
@@ -50,25 +57,14 @@ for OPT in "$@"; do
                 echo "$PROGNAME: option requires an argument -- $1" 1>&2
                 exit 1
             fi
-            INTERFACES+=( "$2" )
+            IFS=',' read -r -a tmp <<< "$2"
+            INTERFACES+=( "${tmp[@]}" )
+            unset IFS tmp
             shift 2
             ;;
-        +*)
-            CAPTUREOPTS+=( "-${1:1}" )
-            shift 1
-            ;;
-        -*)
-            PRINTOPTS+=( "-${1:1}" )
-            shift 1
-            ;;
-        --)
-            shift 1
-            FILTEREXPRESSIONS+=( "$@" )
-            break
-            ;;
         *)
-            if [[ ! -z "$1" ]] && [[ ! "$1" =~ ^-+ ]]; then
-                FILTEREXPRESSIONS+=( "$1" )
+            if [[ ! -z "$1" ]]; then
+                TCPDUMP_ARGS+=( "$1" )
                 shift 1
             fi
             ;;
@@ -79,36 +75,38 @@ if [ -z "${INTERFACES}" ]; then
     INTERFACES=$(ls /sys/class/net)
 fi
 
-echo "INTERFACES: ${INTERFACES[@]}"
-echo "CAPTUREOPTS: ${CAPTUREOPTS[@]}"
-echo "PRINTOPTS: ${PRINTOPTS[@]}"
-echo "FILTEREXPRESSIONS: ${FILTEREXPRESSIONS[@]}"
+echo INTERFACES: "${INTERFACES[@]}"
+echo TCPDUMP_ARGS: "${TCPDUMP_ARGS[@]}"
+echo ENABLE_WRITE_FILE: "${ENABLE_WRITE_FILE}"
+
+mytcpdump(){
+  interface=$1
+  interface_label=`printf %5s $interface`
+  now=$(date +"%Y%m%d_%H%M%S")
+  [ "${ENABLE_WRITE_FILE}" -eq 1 ] && output=${interface}_${now}.pcap || output=/dev/null
+
+  tcpdump -U -l --immediate-mode -i $interface -w $output --print ${TCPDUMP_ARGS[@]} \
+          | sed -u 's/^/['"$interface_label"'] /' 2>/dev/null
+}
+
+watch_interface_and_capture(){
+  interface=$1
+  while :; do
+    if [ -e /sys/class/net/$interface ]; then
+      mytcpdump $interface
+    else
+      ip monitor link | while read -r line; do
+          if echo "$line" | grep -q "$interface.*UP,LOWER_UP" >/dev/null; then
+              echo "Interface $interface is created. Start tcpdump." >&2
+              mytcpdump $interface
+          fi
+      done
+    fi
+  done
+}
 
 for interface in ${INTERFACES[@]}; do
-    interface=`printf %5s $interface`
-    if [ "${ENABLE_WRITE_FILE}" -eq 1 ]; then
-      tcpdump -U --immediate-mode -i $interface -w - -nn ${CAPTUREOPTS[@]} ${FILTEREXPRESSIONS[@]} 2>/dev/null \
-          | tee $interface.pcap \
-          | tcpdump -l -r - ${PRINTOPTS[@]} 2>/dev/null \
-          | sed -u 's/^/['"$interface"'] /' 2>/dev/null &
-    else
-      tcpdump -U --immediate-mode -p -i $interface -w - -nn ${CAPTUREOPTS[@]} ${FILTEREXPRESSIONS[@]} 2>/dev/null \
-          | tcpdump -l -r - ${PRINTOPTS[@]} 2>/dev/null \
-          | sed -u 's/^/['"$interface"'] /' 2>/dev/null &
-    fi
+    watch_interface_and_capture $interface &
 done
 wait
-exit
 
-# Create one tcpdump output per interface and add an identifier to the beginning of each line:
-if [[ $@ =~ -i[[:space:]]?[^[:space:]]+ ]]; then
-    tcpdump -l $@ | sed 's/^/['"${BASH_REMATCH[0]:2}"'] /' &
-else
-#    for interface in $(ifconfig | grep '^[a-z0-9]' | awk '{print $1}'i | sed "/:[0-9]/d")
-    for interface in $(ls /sys/class/net)
-    do
-       tcpdump -U -i $interface -w - -nn $@ | tee $interface.pcap | tcpdump -l -r - | sed 's/^/['"$interface"'] /' 2>/dev/null &
-    done
-fi
-# wait .. until CTRL+C
-wait

@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-#===================================================================================
-#
-# FILE: dump.sh
-# USAGE: dump.sh [-i interface] [tcpdump-parameters]
-# DESCRIPTION: tcpdump on any interface and add the prefix [Interace:xy] in front of the dump data.
-# OPTIONS: same as tcpdump
-# AUTHOR: Sebastian Haas
-# VERSION: 1.2
-# CREATED: 16.09.2014
-# REVISION: 22.09.2014
-#
-#===================================================================================
 
 # When this exits, exit all background processes:
 trap 'kill $(jobs -p) &> /dev/null && sleep 0.2 &&  echo ' EXIT
